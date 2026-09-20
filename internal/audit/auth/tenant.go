@@ -31,31 +31,46 @@ func TenantAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		jwtSecret := os.Getenv("JWT_SECRET")
+		if jwtSecret == "" {
+			http.Error(w, `{"error":"internal server error: missing jwt secret"}`, http.StatusInternalServerError)
+			return
+		}
+
+		headerPart, payloadPart, sigPart := parts[0], parts[1], parts[2]
+
+		// HS256-Signaturprüfung über header.payload
 		mac := hmac.New(sha256.New, []byte(jwtSecret))
-		mac.Write([]byte(parts[0] + "." + parts))
-		expectedSig, err := base64.RawURLEncoding.DecodeString(parts)
+		mac.Write([]byte(headerPart + "." + payloadPart))
+
+		expectedSig, err := base64.RawURLEncoding.DecodeString(sigPart)
 		if err != nil || !hmac.Equal(mac.Sum(nil), expectedSig) {
 			http.Error(w, `{"error":"unauthorized: invalid signature"}`, http.StatusUnauthorized)
 			return
 		}
-		payloadBytes, err := base64.RawURLEncoding.DecodeString(parts)
+
+		// Payload decodieren
+		payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadPart)
 		if err != nil {
 			http.Error(w, `{"error":"unauthorized: invalid payload"}`, http.StatusUnauthorized)
 			return
 		}
-		var claims map[string]interface{}
-		if json.Unmarshal(payloadBytes, &claims) != nil {
+
+		var claims map[string]any
+		if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 			http.Error(w, `{"error":"unauthorized: invalid claims"}`, http.StatusUnauthorized)
 			return
 		}
+
 		if exp, ok := claims["exp"].(float64); ok && time.Now().Unix() > int64(exp) {
 			http.Error(w, `{"error":"unauthorized: token expired"}`, http.StatusUnauthorized)
 			return
 		}
+
 		if claimTenant, _ := claims["tenant_id"].(string); claimTenant != tenantID {
 			http.Error(w, `{"error":"forbidden: tenant mismatch"}`, http.StatusForbidden)
 			return
 		}
+
 		ctx := context.WithValue(r.Context(), TenantKey, tenantID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

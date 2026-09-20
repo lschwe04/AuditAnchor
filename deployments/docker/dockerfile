@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1
+
+# --- Build-Stage ---
+FROM golang:1.24-alpine AS builder
+
+WORKDIR /app
+
+# Zertifikate für TLS/HTTPS und Zeitzonen für gobd-konforme Audit-Logs
+RUN apk add --no-cache ca-certificates tzdata git
+
+# Dependency Caching (nutzt Layer-Caching optimal aus)
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Quellcode kopieren
+COPY . .
+
+# Build: CGO deaktiviert, statisch gelinkt, Symboltabellen entfernt (-s -w), Host-Pfade getrimmt
+# Anpassung: Falls dein Main-Paket im Root liegt, ersetze `./cmd/...` durch `.`
+RUN CGO_ENABLED=0 go build \
+    -ldflags="-s -w -extldflags '-static'" \
+    -trimpath \
+    -o /auditanchor .
+
+# --- Runtime-Stage (Minimal & Hardened) ---
+FROM alpine:3.19
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -g 10001 appgroup \
+    && adduser -u 10001 -G appgroup -D -H appuser
+
+# Non-Root Enforcement
+USER 10001:10001
+
+WORKDIR /app
+
+COPY --from=builder /auditanchor /app/auditanchor
+
+# Standard-Port (bei Bedarf anpassen)
+EXPOSE 8080
+
+ENTRYPOINT ["/app/auditanchor"]
