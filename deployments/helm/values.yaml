@@ -1,0 +1,20 @@
+replicaCount: 1
+
+image:
+  repository: auditanchor/vault
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+env:
+  PORT: "8080"
+  DATABASE_URL: "postgres://postgres:secretpassword@auditanchor-postgres-svc:5432/auditanchor?sslmode=disable"
+  REDIS_URL: "redis://auditanchor-redis-svc:6379/0"
+
+secrets:
+  jwtSecret: "change-me-in-production-min-32-bytes!!!"
+  hmacTimestampSecret: "change-me-in-production-min-32-bytes!!!"
+  enrollmentSecret: "change-me-enrollment-secret"
+
+service:
+  type: ClusterIP
+  port: 8080

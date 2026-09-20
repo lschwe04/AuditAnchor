@@ -42,6 +42,35 @@ func (e *Exporter) StreamTenantEvidenceZIP(ctx context.Context, tenantID string,
 		_ = zipWriter.Close()
 	}()
 
+	// 0. GoBD Verfahrensdokumentations-Metadaten (meta.txt) generieren
+	var minTs, maxTs *time.Time
+	_ = e.pool.QueryRow(ctx, `
+		SELECT MIN(timestamp), MAX(timestamp) FROM evidence_blobs WHERE tenant_id = $1
+	`, tenantID).Scan(&minTs, &maxTs)
+
+	periodStart := "N/A"
+	periodEnd := "N/A"
+	if minTs != nil {
+		periodStart = minTs.UTC().Format(time.RFC3339)
+	}
+	if maxTs != nil {
+		periodEnd = maxTs.UTC().Format(time.RFC3339)
+	}
+
+	metaContent := fmt.Sprintf(
+		"--- GoBD-Verfahrensdokumentation / Export-Metadaten ---\n"+
+			"Systemhaus: AuditAnchor DACH MSP Edition\n"+
+			"Tenant-ID: %s\n"+
+			"Pruefzeitraum-Start: %s\n"+
+			"Pruefzeitraum-Ende: %s\n"+
+			"Export-Erstellt-UTC: %s\n"+
+			"WORM/Integrität: SHA-256 Chain + HMAC Timestamp\n",
+		tenantID, periodStart, periodEnd, time.Now().UTC().Format(time.RFC3339),
+	)
+	if metaFile, err := zipWriter.Create("meta.txt"); err == nil {
+		_, _ = metaFile.Write([]byte(metaContent))
+	}
+
 	// 1. Export Evidence Blobs
 	rows, err := e.pool.Query(ctx, `
         SELECT blob_id, content_hash, payload_json::text, timestamp 

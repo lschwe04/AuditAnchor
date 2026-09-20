@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: auditanchor-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secretpassword
+      POSTGRES_DB: auditanchor
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auditanchor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: auditanchor-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  vault:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/dockerfile
+    container_name: auditanchor-vault
+    environment:
+      DATABASE_URL: postgres://postgres:secretpassword@postgres:5432/auditanchor?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: super-secret-jwt-key-min-32-bytes-long-dach-msphub!!!
+      HMAC_TIMESTAMP_SECRET: super-secret-hmac-key-min-32-bytes-long-dach-msphub!!!
+      ENROLLMENT_SECRET: default-enrollment-secret-dach
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:
