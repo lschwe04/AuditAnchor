@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"auditanchor/internal/audit"
@@ -34,27 +33,19 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-
-	tenantID, ok := r.Context().Value(auth.TenantKey).(string)
-	if !ok || tenantID == "" {
-		http.Error(w, `{"error":"unauthorized tenant context"}`, http.StatusUnauthorized)
-		return
-	}
+	tenantID, _ := r.Context().Value(auth.TenantKey).(string)
 
 	var req IngestRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"strict json decode failed: %s"}`, err.Error()), http.StatusBadRequest)
+	if err := decodeStrict(r.Body, &req); err != nil {
+		http.Error(w, `{"error":"invalid or unknown fields in json"}`, http.StatusBadRequest)
 		return
 	}
 
 	payloadBytes, err := json.Marshal(req.Payload)
 	if err != nil {
-		http.Error(w, `{"error":"payload serialization error"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"failed to marshal payload"}`, http.StatusBadRequest)
 		return
 	}
-
 	hashSum := sha256.Sum256(payloadBytes)
 	contentHash := hex.EncodeToString(hashSum[:])
 	blobID := uuid.New().String()
@@ -62,18 +53,18 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	_, err = h.pool.Exec(ctx, `
-		INSERT INTO evidence_blobs (blob_id, tenant_id, content_hash, payload_json, timestamp, hmac_sig)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`, blobID, tenantID, contentHash, string(payloadBytes), tsToken.Timestamp.UTC(), tsToken.HMACSig)
+        INSERT INTO evidence_blobs (blob_id, tenant_id, content_hash, payload_json, timestamp, hmac_sig)
+        VALUES ($1, $2, $3, $4, $5, $6)
+    `, blobID, tenantID, contentHash, string(payloadBytes), tsToken.Timestamp, tsToken.HMACSig)
 	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"database insert failed: %v"}`, err), http.StatusInternalServerError)
+		http.Error(w, `{"error":"database insert failed"}`, http.StatusInternalServerError)
 		return
 	}
 
 	if err := h.auditLogger.LogEvent(ctx, tenantID, "EVIDENCE_INGEST", "vault-api", blobID, map[string]any{
 		"hash": contentHash,
 	}); err != nil {
-		http.Error(w, `{"error":"audit log recording failed"}`, http.StatusInternalServerError)
+		http.Error(w, `{"error":"audit log failed"}`, http.StatusInternalServerError)
 		return
 	}
 

@@ -20,17 +20,27 @@ func NewLogger(pool *pgxpool.Pool) *Logger {
 }
 
 func (l *Logger) LogEvent(ctx context.Context, tenantID, action, actor, resourceID string, payload map[string]any) error {
-	payloadBytes, _ := json.Marshal(payload)
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("payload marshal error: %w", err)
+	}
+
 	tx, err := l.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin tx failed: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// Advisory Lock gegen parallele First-Row-Inits oder Interleaving bei Tenant-Chains
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, tenantID)
+	if err != nil {
+		return fmt.Errorf("advisory lock failed: %w", err)
+	}
 
 	var lastHash string
 	err = tx.QueryRow(ctx, `
         SELECT current_hash FROM evidence_audit_chain 
-        WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1 FOR UPDATE
+        WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1
     `, tenantID).Scan(&lastHash)
 	if err != nil {
 		lastHash = "0000000000000000000000000000000000000000000000000000000000000000"
