@@ -54,9 +54,24 @@ func main() {
 	tsService := evidence.NewTimestampService(os.Getenv("HMAC_TIMESTAMP_SECRET"))
 	exporter := evidence.NewExporter(dbPool)
 
+	// DACH-Compliance / Zero-Trust Services & Handlers
+	verifier := audit.NewChainVerifier(dbPool)
+	verifyHandler := handlers.NewVerifyHandler(verifier)
+
+	tombstoneService := evidence.NewTombstoneService(dbPool)
+	tombstoneHandler := handlers.NewTombstoneHandler(tombstoneService)
+
+	enrollmentSecret := os.Getenv("ENROLLMENT_SECRET")
+	if enrollmentSecret == "" {
+		slog.Warn("ENROLLMENT_SECRET ist leer, Agenten-Enrollment wird fehlschlagen")
+	}
+	secManager := auth.NewSecurityManager(os.Getenv("JWT_SECRET"))
+	enrollHandler := handlers.NewEnrollHandler(enrollmentSecret, secManager)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
+	// Geschützte Vault-APIs (Tenant-Auth + Rate-Limiter)
 	vaultChain := func(next http.Handler) http.Handler {
 		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(next))
 	}
@@ -64,8 +79,14 @@ func main() {
 	ingestHandler := handlers.NewIngestHandler(dbPool, auditLogger, tsService)
 	exportHandler := handlers.NewExportHandler(exporter, auditLogger)
 
+	// Bestehende Routen
 	mux.Handle("/api/v1/evidence/ingest", vaultChain(http.HandlerFunc(ingestHandler.Ingest)))
 	mux.Handle("/api/v1/evidence/export", vaultChain(http.HandlerFunc(exportHandler.Export)))
+
+	// Neue DACH-Compliance & Enrollment Routen
+	mux.Handle("/api/v1/audit/verify", vaultChain(http.HandlerFunc(verifyHandler.Verify)))
+	mux.Handle("/api/v1/evidence/tombstone", vaultChain(http.HandlerFunc(tombstoneHandler.Tombstone)))
+	mux.Handle("/api/v1/agents/enroll", http.HandlerFunc(enrollHandler.Enroll))
 
 	port := os.Getenv("PORT")
 	if port == "" {
