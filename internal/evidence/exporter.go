@@ -42,33 +42,30 @@ func (e *Exporter) StreamTenantEvidenceZIP(ctx context.Context, tenantID string,
 		_ = zipWriter.Close()
 	}()
 
-	// 0. GoBD Verfahrensdokumentations-Metadaten (meta.txt) generieren
+	// GoBD Verfahrensdokumentation Eckdaten (meta.txt)
 	var minTs, maxTs *time.Time
-	_ = e.pool.QueryRow(ctx, `
-		SELECT MIN(timestamp), MAX(timestamp) FROM evidence_blobs WHERE tenant_id = $1
-	`, tenantID).Scan(&minTs, &maxTs)
+	_ = e.pool.QueryRow(ctx, `SELECT MIN(timestamp), MAX(timestamp) FROM evidence_blobs WHERE tenant_id = $1`, tenantID).Scan(&minTs, &maxTs)
 
-	periodStart := "N/A"
-	periodEnd := "N/A"
+	startStr := "N/A"
+	endStr := "N/A"
 	if minTs != nil {
-		periodStart = minTs.UTC().Format(time.RFC3339)
+		startStr = minTs.UTC().Format(time.RFC3339)
 	}
 	if maxTs != nil {
-		periodEnd = maxTs.UTC().Format(time.RFC3339)
+		endStr = maxTs.UTC().Format(time.RFC3339)
 	}
 
 	metaContent := fmt.Sprintf(
-		"--- GoBD-Verfahrensdokumentation / Export-Metadaten ---\n"+
-			"Systemhaus: AuditAnchor DACH MSP Edition\n"+
-			"Tenant-ID: %s\n"+
-			"Pruefzeitraum-Start: %s\n"+
-			"Pruefzeitraum-Ende: %s\n"+
-			"Export-Erstellt-UTC: %s\n"+
-			"WORM/Integrität: SHA-256 Chain + HMAC Timestamp\n",
-		tenantID, periodStart, periodEnd, time.Now().UTC().Format(time.RFC3339),
+		"=== GoBD VERFAHRENSDOKUMENTATION METADATEN ===\n"+
+			"Mandant (Tenant-ID): %s\n"+
+			"Prüfzeitraum von: %s\n"+
+			"Prüfzeitraum bis: %s\n"+
+			"Export-Timestamp (UTC): %s\n"+
+			"Integritätssicherung: SHA-256 Chaining + HMAC-Timestamping\n",
+		tenantID, startStr, endStr, time.Now().UTC().Format(time.RFC3339),
 	)
-	if metaFile, err := zipWriter.Create("meta.txt"); err == nil {
-		_, _ = metaFile.Write([]byte(metaContent))
+	if mf, err := zipWriter.Create("meta.txt"); err == nil {
+		_, _ = mf.Write([]byte(metaContent))
 	}
 
 	// 1. Export Evidence Blobs
@@ -114,7 +111,7 @@ func (e *Exporter) StreamTenantEvidenceZIP(ctx context.Context, tenantID string,
 		return fmt.Errorf("failed to write manifest.json: %w", err)
 	}
 
-	// 2. Export Audit Chain (GoBD-konform komplettieren)
+	// 2. Export Audit Chain
 	chainRows, err := e.pool.Query(ctx, `
         SELECT id, tenant_id, action, actor, resource_id, payload::text, prev_hash, current_hash, created_at
         FROM evidence_audit_chain WHERE tenant_id = $1 ORDER BY id ASC

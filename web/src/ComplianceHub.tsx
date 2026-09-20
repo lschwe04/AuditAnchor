@@ -94,7 +94,7 @@ export default function ComplianceHub() {
         <div className="bg-slate-800 p-4 rounded-lg border border-slate-700">
           <h2 className="font-semibold flex items-center gap-2 mb-2 text-amber-400"><Trash2 size={18} /> DSGVO Tombstone</h2>
           <p className="text-sm text-slate-400 mb-4">Cryptographic Erasure von Blobs via Tombstone-Marker (Aktiver Tenant: {selectedTenant}).</p>
-          <span className="text-xs text-slate-500">API Endpoint: POST /api/v1/evidence/tombstone (Header: X-Tenant-ID: {selectedTenant})</span>
+          <span className="text-xs text-slate-500">API Endpoint: POST /api/v1/evidence/tombstone</span>
         </div>
       </div>
     </div>

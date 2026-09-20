@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"time"
 
 	"auditanchor/internal/audit"
 	"auditanchor/internal/audit/auth"
@@ -34,6 +36,10 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenantID, _ := r.Context().Value(auth.TenantKey).(string)
+	if tenantID == "" {
+		http.Error(w, `{"error":"missing tenant context"}`, http.StatusUnauthorized)
+		return
+	}
 
 	var req IngestRequest
 	if err := decodeStrict(r.Body, &req); err != nil {
@@ -52,7 +58,15 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 	tsToken := h.tsService.Stamp(payloadBytes)
 
 	ctx := r.Context()
-	_, err = h.pool.Exec(ctx, `
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		http.Error(w, `{"error":"transaction start failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Blob insert
+	_, err = tx.Exec(ctx, `
         INSERT INTO evidence_blobs (blob_id, tenant_id, content_hash, payload_json, timestamp, hmac_sig)
         VALUES ($1, $2, $3, $4, $5, $6)
     `, blobID, tenantID, contentHash, string(payloadBytes), tsToken.Timestamp, tsToken.HMACSig)
@@ -61,10 +75,39 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.auditLogger.LogEvent(ctx, tenantID, "EVIDENCE_INGEST", "vault-api", blobID, map[string]any{
-		"hash": contentHash,
-	}); err != nil {
+	// 2. Transaktionaler Audit-Log Chaining Check innerhalb derselben Tx (Vermeidung von Orphan Logs)
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, tenantID)
+	if err != nil {
+		http.Error(w, `{"error":"advisory lock failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	var lastHash string
+	err = tx.QueryRow(ctx, `
+        SELECT current_hash FROM evidence_audit_chain 
+        WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1
+    `, tenantID).Scan(&lastHash)
+	if err != nil {
+		lastHash = "0000000000000000000000000000000000000000000000000000000000000000"
+	}
+
+	auditPayloadBytes, _ := json.Marshal(map[string]any{"hash": contentHash})
+	now := time.Now().UTC()
+	toHash := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s", lastHash, tenantID, "EVIDENCE_INGEST", "vault-api", blobID, string(auditPayloadBytes), now.Format(time.RFC3339Nano))
+	hBytes := sha256.Sum256([]byte(toHash))
+	currHash := hex.EncodeToString(hBytes[:])
+
+	_, err = tx.Exec(ctx, `
+        INSERT INTO evidence_audit_chain (tenant_id, action, actor, resource_id, payload, prev_hash, current_hash, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `, tenantID, "EVIDENCE_INGEST", "vault-api", blobID, string(auditPayloadBytes), lastHash, currHash, now)
+	if err != nil {
 		http.Error(w, `{"error":"audit log failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		http.Error(w, `{"error":"commit failed"}`, http.StatusInternalServerError)
 		return
 	}
 
