@@ -71,22 +71,28 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	// Least-Privilege Route Guards
+	// Least-Privilege Granular Route Guards (GoBD/Enterprise Segregation)
 	ingestChain := func(next http.Handler) http.Handler {
 		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("agent:ingest-only")(next)))
 	}
-	tenantAdminChain := func(next http.Handler) http.Handler {
-		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(next))
+	exportChain := func(next http.Handler) http.Handler {
+		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("admin:export")(next)))
+	}
+	verifyChain := func(next http.Handler) http.Handler {
+		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("compliance:verify")(next)))
+	}
+	tombstoneChain := func(next http.Handler) http.Handler {
+		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("admin:tombstone")(next)))
 	}
 
 	ingestHandler := handlers.NewIngestHandler(dbPool, auditLogger, tsService)
 	exportHandler := handlers.NewExportHandler(exporter, auditLogger)
 
-	// Routen-Registrierung mit differenzierten Scopes
+	// Differenzierte Scope-Bindung pro Endpunkt
 	mux.Handle("/api/v1/evidence/ingest", ingestChain(http.HandlerFunc(ingestHandler.Ingest)))
-	mux.Handle("/api/v1/evidence/export", tenantAdminChain(http.HandlerFunc(exportHandler.Export)))
-	mux.Handle("/api/v1/audit/verify", tenantAdminChain(http.HandlerFunc(verifyHandler.Verify)))
-	mux.Handle("/api/v1/evidence/tombstone", tenantAdminChain(http.HandlerFunc(tombstoneHandler.Tombstone)))
+	mux.Handle("/api/v1/evidence/export", exportChain(http.HandlerFunc(exportHandler.Export)))
+	mux.Handle("/api/v1/audit/verify", verifyChain(http.HandlerFunc(verifyHandler.Verify)))
+	mux.Handle("/api/v1/evidence/tombstone", tombstoneChain(http.HandlerFunc(tombstoneHandler.Tombstone)))
 	mux.Handle("/api/v1/agents/enroll", http.HandlerFunc(enrollHandler.Enroll))
 
 	port := os.Getenv("PORT")

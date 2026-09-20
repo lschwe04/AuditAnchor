@@ -1,12 +1,13 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Evidenz-Blobs (Rohdaten + Krypto-Stempel aus ingest.go)
+-- Evidenz-Blobs (GoBD-konform: JSONB für Metadaten + raw_blob_uri für unveränderte Binärbelege/ZUGFeRD)
 CREATE TABLE IF NOT EXISTS evidence_blobs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     blob_id VARCHAR(64) NOT NULL UNIQUE,
     tenant_id VARCHAR(64) NOT NULL,
     content_hash CHAR(64) NOT NULL,
-    payload_json JSONB NOT NULL,
+    payload_json JSONB NULL,
+    raw_blob_uri VARCHAR(512) NULL,
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
     hmac_sig CHAR(128) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS evidence_blobs (
 
 CREATE INDEX idx_evidence_blobs_tenant_time ON evidence_blobs(tenant_id, timestamp DESC);
 CREATE INDEX idx_evidence_blobs_hash ON evidence_blobs(content_hash);
+CREATE INDEX idx_evidence_blobs_raw_uri ON evidence_blobs(raw_blob_uri) WHERE raw_blob_uri IS NOT NULL;
 
 -- Fälschungssichere Audit-Chain (aus audit.go mit FOR UPDATE Row-Lock Chaining)
 CREATE TABLE IF NOT EXISTS evidence_audit_chain (
