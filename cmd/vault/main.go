@@ -61,12 +61,9 @@ func main() {
 	tombstoneService := evidence.NewTombstoneService(dbPool)
 	tombstoneHandler := handlers.NewTombstoneHandler(tombstoneService)
 
-	enrollmentSecret := os.Getenv("ENROLLMENT_SECRET")
-	if enrollmentSecret == "" {
-		slog.Warn("ENROLLMENT_SECRET ist leer, Agenten-Enrollment wird fehlschlagen")
-	}
+	// Multi-Agent Secret Management: ENROLLMENT_SECRET env var ist obsolet, wir übergeben dbPool
 	secManager := auth.NewSecurityManager(os.Getenv("JWT_SECRET"))
-	enrollHandler := handlers.NewEnrollHandler(enrollmentSecret, secManager)
+	enrollHandler := handlers.NewEnrollHandler(dbPool, secManager)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })

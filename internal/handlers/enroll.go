@@ -6,24 +6,26 @@ import (
 	"time"
 
 	"auditanchor/internal/audit/auth"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type EnrollRequest struct {
 	TenantID         string `json:"tenant_id"`
 	EnrollmentSecret string `json:"enrollment_secret"`
 	AgentName        string `json:"agent_name"`
-	// Scopes entfernt, um Manipulation durch den Client zu verhindern
+	// Scopes absichtlich nicht im Struct, um Client-Manipulation zu blockieren (Hotfix)
 }
 
 type EnrollHandler struct {
-	expectedSecret string
-	secManager     *auth.SecurityManager
+	pool       *pgxpool.Pool
+	secManager *auth.SecurityManager
 }
 
-func NewEnrollHandler(expectedSecret string, secManager *auth.SecurityManager) *EnrollHandler {
+func NewEnrollHandler(pool *pgxpool.Pool, secManager *auth.SecurityManager) *EnrollHandler {
 	return &EnrollHandler{
-		expectedSecret: expectedSecret,
-		secManager:     secManager,
+		pool:       pool,
+		secManager: secManager,
 	}
 }
 
@@ -39,12 +41,21 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.EnrollmentSecret != h.expectedSecret {
-		http.Error(w, `{"error":"unauthorized: invalid enrollment secret"}`, http.StatusUnauthorized)
+	// Multi-Agent Secret Check inkl. Revocation-Logik
+	var isValid bool
+	err := h.pool.QueryRow(r.Context(), `
+		SELECT EXISTS (
+			SELECT 1 FROM agent_enrollment_tokens 
+			WHERE tenant_id = $1 AND enrollment_secret = $2 AND is_revoked = false
+		)
+	`, req.TenantID, req.EnrollmentSecret).Scan(&isValid)
+
+	if err != nil || !isValid {
+		http.Error(w, `{"error":"unauthorized: invalid or revoked enrollment secret"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// FIX F-01: Hardcoded Scopes. Ein Agent darf aus Prinzip nur Ingest-Rechte erhalten.
+	// FIX F-01: Hardcoded Scopes - Ein Agent darf ausschließlich Ingest-Rechte erhalten.
 	scopes := []string{"agent:ingest-only"}
 
 	token, err := h.secManager.GenerateSignedJWT(req.TenantID, "agent-scoped", scopes, 24*time.Hour)
