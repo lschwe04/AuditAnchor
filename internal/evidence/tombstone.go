@@ -3,6 +3,7 @@ package evidence
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,14 @@ func (ts *TombstoneService) ExecuteTombstone(ctx context.Context, tenantID, blob
 		return "", fmt.Errorf("failed to begin tombstone tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	// FIX: Identischer globaler 64-Bit Hash-Advisory-Lock wie im gesamten System
+	hLock := sha256.Sum256([]byte(tenantID))
+	lockID := int64(binary.BigEndian.Uint64(hLock[:8]))
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID)
+	if err != nil {
+		return "", fmt.Errorf("advisory lock failed: %w", err)
+	}
 
 	var existingHash string
 	err = tx.QueryRow(ctx, `

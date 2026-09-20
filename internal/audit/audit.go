@@ -3,10 +3,10 @@ package audit
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,10 +32,9 @@ func (l *Logger) LogEvent(ctx context.Context, tenantID, action, actor, resource
 	}
 	defer tx.Rollback(ctx)
 
-	// FIX F-04: Nutze 64-Bit FNV Hash anstelle von 32-Bit hashtext() zur Vermeidung von Kollisionen
-	h64 := fnv.New64a()
-	h64.Write([]byte(tenantID))
-	lockID := int64(h64.Sum64())
+	// FIX: Deterministischer, kollisionsresistenter 64-Bit Advisory Lock basierend auf SHA256
+	h256 := sha256.Sum256([]byte(tenantID))
+	lockID := int64(binary.BigEndian.Uint64(h256[:8]))
 
 	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID)
 	if err != nil {
@@ -43,9 +42,10 @@ func (l *Logger) LogEvent(ctx context.Context, tenantID, action, actor, resource
 	}
 
 	var lastHash string
+	// FIX: FOR UPDATE hinzugefügt, um Row-Level Race Conditions abzufangen
 	err = tx.QueryRow(ctx, `
         SELECT current_hash FROM evidence_audit_chain 
-        WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1
+        WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1 FOR UPDATE
     `, tenantID).Scan(&lastHash)
 	if err != nil {
 		lastHash = "0000000000000000000000000000000000000000000000000000000000000000"

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -37,7 +36,6 @@ func (h *RMMWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Mandatory Security & Tenant Headers
 	tenantID := r.Header.Get("X-Tenant-ID")
 	integration := r.Header.Get("X-Integration-Name")
 	timestampStr := r.Header.Get("X-Webhook-Timestamp")
@@ -48,7 +46,6 @@ func (h *RMMWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Replay Protection (max 5 minutes skew window)
 	reqTime, err := time.Parse(time.RFC3339, timestampStr)
 	if err != nil {
 		http.Error(w, `{"error":"invalid timestamp format, RFC3339 required"}`, http.StatusBadRequest)
@@ -59,14 +56,12 @@ func (h *RMMWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Read body safely with strict size limit (1MB)
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, `{"error":"failed to read payload body"}`, http.StatusBadRequest)
 		return
 	}
 
-	// 4. Fetch Tenant-Scoped Secret
 	var secret string
 	ctx := r.Context()
 	err = h.pool.QueryRow(ctx, `
@@ -78,7 +73,6 @@ func (h *RMMWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Timing-Safe HMAC-SHA256 Verification
 	expectedSig := computeHMACSHA256(body, []byte(secret))
 	cleanSig := strings.TrimPrefix(strings.ToLower(signatureHeader), "sha256=")
 	if !hmac.Equal([]byte(cleanSig), []byte(expectedSig)) {
@@ -86,10 +80,9 @@ func (h *RMMWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Strict Schema Enforcement
 	var payload RMMWebhookPayload
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	decoder.DisallowUnknownFields() // Optional, erzwingt exaktes Schema
+	decoder.DisallowUnknownFields()
 	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, `{"error":"strict schema validation failed"}`, http.StatusBadRequest)
 		return
@@ -99,7 +92,6 @@ func (h *RMMWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Forensic Detection
 	h.processForensicIOCs(ctx, tenantID, payload)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -119,21 +111,23 @@ func computeHMACSHA256(message, secret []byte) string {
 func (h *RMMWebhookHandler) processForensicIOCs(ctx context.Context, tenantID string, payload RMMWebhookPayload) {
 	if rawIOC, ok := payload.IOCs["suspicious_webhook"]; ok {
 		if hookURL, valid := rawIOC.(string); valid && isExfilDomain(hookURL) {
+			// FIX: Sichere Serialisierung des Payloads anstelle von String-Interpolation zur Vermeidung von JSON-Injection
+			safePayload, _ := json.Marshal(map[string]string{"detected_exfil_hook": hookURL})
+
 			_, _ = h.pool.Exec(ctx, `
 				INSERT INTO evidence_audit_chain (tenant_id, action, actor, resource_id, payload, prev_hash, current_hash, created_at)
-				SELECT $1, 'FORENSIC_ATTACKER_HOOK_DETECTED', 'rmm-webhook-shield', $2, $3, 
-				       COALESCE((SELECT current_hash FROM evidence_audit_chain WHERE tenant_id=$1 ORDER BY id DESC LIMIT 1), '0000000000000000000000000000000000000000000000000000000000000000'), 
+				SELECT $1, 'FORENSIC_ATTACKER_HOOK_DETECTED', 'rmm-webhook-shield', $2, $3::jsonb, 
+				       COALESCE((SELECT current_hash FROM evidence_audit_chain WHERE tenant_id=$1 ORDER BY id DESC LIMIT 1 FOR UPDATE), '0000000000000000000000000000000000000000000000000000000000000000'), 
 				       'forensic-logged', NOW()
-			`, tenantID, payload.AlertID, fmt.Sprintf(`{"detected_exfil_hook": "%s"}`, hookURL))
+			`, tenantID, payload.AlertID, string(safePayload))
 		}
 	}
 }
 
-// FIX F-05: Solider SSRF Domain-Check mittels echtem URL-Parsing
 func isExfilDomain(rawURL string) bool {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return true // Ungültige URLs werten wir im Kontext einer Exfiltration als verdächtig
+		return true
 	}
 
 	hostname := strings.ToLower(parsed.Hostname())

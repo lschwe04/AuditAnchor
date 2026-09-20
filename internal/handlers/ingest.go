@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -75,17 +76,21 @@ func (h *IngestHandler) Ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Transaktionaler Audit-Log Chaining Check innerhalb derselben Tx (Vermeidung von Orphan Logs)
-	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, tenantID)
+	// 2. Transaktionaler Audit-Log Chaining Check
+	// FIX: Exakt dieselbe 64-Bit Hash-Logik für den Advisory-Lock wie in audit.go verwenden
+	hLock := sha256.Sum256([]byte(tenantID))
+	lockID := int64(binary.BigEndian.Uint64(hLock[:8]))
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID)
 	if err != nil {
 		http.Error(w, `{"error":"advisory lock failed"}`, http.StatusInternalServerError)
 		return
 	}
 
 	var lastHash string
+	// FIX: FOR UPDATE verwenden, um Konsistenz zu erzwingen
 	err = tx.QueryRow(ctx, `
         SELECT current_hash FROM evidence_audit_chain 
-        WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1
+        WHERE tenant_id = $1 ORDER BY id DESC LIMIT 1 FOR UPDATE
     `, tenantID).Scan(&lastHash)
 	if err != nil {
 		lastHash = "0000000000000000000000000000000000000000000000000000000000000000"
