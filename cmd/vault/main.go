@@ -22,8 +22,13 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	if os.Getenv("JWT_SECRET") == "" || os.Getenv("HMAC_TIMESTAMP_SECRET") == "" {
+		slog.Error("kritische sicherheits-secrets fehlen (JWT_SECRET oder HMAC_TIMESTAMP_SECRET)")
+		os.Exit(1)
+	}
+
 	slog.Info("Starte AuditAnchor Evidence-Vault MVP...")
-	startupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	startupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	dbPool, err := db.InitDB(startupCtx, os.Getenv("DATABASE_URL"))
@@ -32,6 +37,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer dbPool.Close()
+
+	if err := db.RunMigrations(startupCtx, dbPool, "migrations"); err != nil {
+		slog.Error("DB Migration fehlgeschlagen", "error", err)
+		os.Exit(1)
+	}
 
 	var redisClient *redis.Client
 	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
@@ -47,7 +57,6 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	// Geschützte Vault-APIs (Tenant-Auth + Rate-Limiter)
 	vaultChain := func(next http.Handler) http.Handler {
 		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(next))
 	}
