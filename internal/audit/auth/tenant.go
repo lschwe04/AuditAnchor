@@ -14,7 +14,10 @@ import (
 
 type contextKey string
 
-const TenantKey contextKey = "tenant_id"
+const (
+	TenantKey contextKey = "tenant_id"
+	ScopeKey  contextKey = "scopes"
+)
 
 func TenantAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,8 +40,6 @@ func TenantAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		headerPart, payloadPart, sigPart := parts[0], parts[1], parts[2]
-
-		// HS256-Signaturprüfung über header.payload
 		mac := hmac.New(sha256.New, []byte(jwtSecret))
 		mac.Write([]byte(headerPart + "." + payloadPart))
 
@@ -48,7 +49,6 @@ func TenantAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Payload decodieren
 		payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadPart)
 		if err != nil {
 			http.Error(w, `{"error":"unauthorized: invalid payload"}`, http.StatusUnauthorized)
@@ -71,7 +71,41 @@ func TenantAuthMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		var scopes []string
+		if rawScopes, ok := claims["scopes"].([]any); ok {
+			for _, s := range rawScopes {
+				if str, ok := s.(string); ok {
+					scopes = append(scopes, str)
+				}
+			}
+		}
+
 		ctx := context.WithValue(r.Context(), TenantKey, tenantID)
+		ctx = context.WithValue(ctx, ScopeKey, scopes)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func RequireScope(requiredScope string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			scopes, ok := r.Context().Value(ScopeKey).([]string)
+			if !ok {
+				http.Error(w, `{"error":"forbidden: missing scopes"}`, http.StatusForbidden)
+				return
+			}
+			hasScope := false
+			for _, s := range scopes {
+				if s == requiredScope || s == "*" {
+					hasScope = true
+					break
+				}
+			}
+			if !hasScope {
+				http.Error(w, `{"error":"forbidden: insufficient scope"}`, http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

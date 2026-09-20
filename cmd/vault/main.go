@@ -23,7 +23,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	if os.Getenv("JWT_SECRET") == "" || os.Getenv("HMAC_TIMESTAMP_SECRET") == "" {
-		slog.Error("kritische sicherheits-secrets fehlen (JWT_SECRET oder HMAC_TIMESTAMP_SECRET)")
+		slog.Error("kritische Sicherheits-Secrets fehlen (JWT_SECRET oder HMAC_TIMESTAMP_SECRET)")
 		os.Exit(1)
 	}
 
@@ -71,21 +71,22 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	// Geschützte Vault-APIs (Tenant-Auth + Rate-Limiter)
-	vaultChain := func(next http.Handler) http.Handler {
+	// Least-Privilege Route Guards
+	ingestChain := func(next http.Handler) http.Handler {
+		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("agent:ingest-only")(next)))
+	}
+	tenantAdminChain := func(next http.Handler) http.Handler {
 		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(next))
 	}
 
 	ingestHandler := handlers.NewIngestHandler(dbPool, auditLogger, tsService)
 	exportHandler := handlers.NewExportHandler(exporter, auditLogger)
 
-	// Bestehende Routen
-	mux.Handle("/api/v1/evidence/ingest", vaultChain(http.HandlerFunc(ingestHandler.Ingest)))
-	mux.Handle("/api/v1/evidence/export", vaultChain(http.HandlerFunc(exportHandler.Export)))
-
-	// Neue DACH-Compliance & Enrollment Routen
-	mux.Handle("/api/v1/audit/verify", vaultChain(http.HandlerFunc(verifyHandler.Verify)))
-	mux.Handle("/api/v1/evidence/tombstone", vaultChain(http.HandlerFunc(tombstoneHandler.Tombstone)))
+	// Routen-Registrierung mit differenzierten Scopes
+	mux.Handle("/api/v1/evidence/ingest", ingestChain(http.HandlerFunc(ingestHandler.Ingest)))
+	mux.Handle("/api/v1/evidence/export", tenantAdminChain(http.HandlerFunc(exportHandler.Export)))
+	mux.Handle("/api/v1/audit/verify", tenantAdminChain(http.HandlerFunc(verifyHandler.Verify)))
+	mux.Handle("/api/v1/evidence/tombstone", tenantAdminChain(http.HandlerFunc(tombstoneHandler.Tombstone)))
 	mux.Handle("/api/v1/agents/enroll", http.HandlerFunc(enrollHandler.Enroll))
 
 	port := os.Getenv("PORT")
@@ -116,4 +117,5 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
+	slog.Info("Vault ordnungsgemäß gestoppt.")
 }

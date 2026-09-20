@@ -9,9 +9,10 @@ import (
 )
 
 type EnrollRequest struct {
-	TenantID         string `json:"tenant_id"`
-	EnrollmentSecret string `json:"enrollment_secret"`
-	AgentName        string `json:"agent_name"`
+	TenantID         string   `json:"tenant_id"`
+	EnrollmentSecret string   `json:"enrollment_secret"`
+	AgentName        string   `json:"agent_name"`
+	Scopes           []string `json:"scopes"`
 }
 
 type EnrollHandler struct {
@@ -43,7 +44,12 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.secManager.GenerateSignedJWT(req.TenantID, "agent-zero-config", 24*time.Hour)
+	scopes := req.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{"agent:ingest-only"}
+	}
+
+	token, err := h.secManager.GenerateSignedJWT(req.TenantID, "agent-scoped", scopes, 24*time.Hour)
 	if err != nil {
 		http.Error(w, `{"error":"failed to generate agent token"}`, http.StatusInternalServerError)
 		return
@@ -55,6 +61,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		"status":     "enrolled",
 		"token":      token,
 		"tenant_id":  req.TenantID,
+		"scopes":     scopes,
 		"expires_in": 86400,
 	})
 }

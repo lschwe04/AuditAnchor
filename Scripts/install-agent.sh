@@ -1,41 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG_DIR="/etc/auditanchor"
-TOKEN_FILE="${CONFIG_DIR}/agent.token"
-API_URL="${API_URL:-http://localhost:8080}"
-TENANT_ID="${TENANT_ID:-}"
-ENROLLMENT_SECRET="${ENROLLMENT_SECRET:-}"
+VAULT_URL="${VAULT_URL:-http://localhost:8080}"
+TENANT_ID="${1:-}"
+SECRET="${2:-}"
+AGENT_NAME="${3:-default-agent}"
 
-if [[ $EUID -ne 0 ]]; then
-   echo "Bitte als root ausführen (sudo ./install-agent.sh)" >&2
-   exit 1
+if [ -z "$TENANT_ID" ] || [ -z "$SECRET" ]; then
+  echo "Verwendung: VAULT_URL=http://... ./install-agent.sh <TENANT_ID> <ENROLLMENT_SECRET> [AGENT_NAME]"
+  exit 1
 fi
 
-if [[ -z "$TENANT_ID" \vert{}\vert{} -z "$ENROLLMENT_SECRET" ]]; then
-    read -rp "Mandanten-ID (TENANT_ID): " TENANT_ID
-    read -rsp "Enrollment-Secret (ENROLLMENT_SECRET): " ENROLLMENT_SECRET
-    echo ""
+if ! command -v jq &> /dev/null; then
+  echo "[!] jq ist nicht installiert. Bitte installieren."
+  exit 1
 fi
 
-mkdir -p "$CONFIG_DIR"
-chmod 700 "$CONFIG_DIR"
+echo "[*] Registriere Agent '${AGENT_NAME}' für Tenant '${TENANT_ID}'..."
+PAYLOAD=$(jq -n \
+  --arg tid "$TENANT_ID" \
+  --arg sec "$SECRET" \
+  --arg name "$AGENT_NAME" \
+  '{tenant_id: $tid, enrollment_secret: $sec, agent_name: $name, scopes: ["agent:ingest-only"]}')
 
-echo "Enrollment an ${API_URL}/api/v1/agents/enroll wird durchgeführt..."
-PAYLOAD=$(jq -nc --arg tid "$TENANT_ID" --arg sec "$ENROLLMENT_SECRET" --arg name "$(hostname)" '{tenant_id: $tid, enrollment_secret: $sec, agent_name:$name}')
+RESPONSE=$(curl -s -X POST "${VAULT_URL}/api/v1/agents/enroll" \
+  -H "Content-Type: application/json" \
+  -d "$PAYLOAD")
 
-RESPONSE=$(curl -s -f -X POST "${API_URL}/api/v1/agents/enroll" \
-    -H "Content-Type: application/json" \
-    -d "$PAYLOAD")
-
-TOKEN=$(echo "$RESPONSE" | jq -r '.token')
-if [[ -z "$TOKEN" \vert{}\vert{} "$TOKEN" == "null" ]]; then
-    echo "Fehler beim Enrollment: Ungültige Antwort vom Server." >&2
-    exit 1
+TOKEN=$(echo "$RESPONSE" | grep -o '"token":"[^"]*' | sed 's/"token":"//')
+if [ -z "$TOKEN" ]; then
+  echo "[!] Fehler beim Enrollment: $RESPONSE"
+  exit 1
 fi
 
-echo "$TOKEN" > "$TOKEN_FILE"
-chmod 600 "$TOKEN_FILE"
-chown root:root "$TOKEN_FILE"
-
-echo "Agent erfolgreich enrolled. Token gespeichert unter $TOKEN_FILE."
+sudo mkdir -p /etc/auditanchor
+cat <<EOF | sudo tee /etc/auditanchor/agent.env > /dev/null
+VAULT_URL=${VAULT_URL}
+TENANT_ID=${TENANT_ID}
+BEARER_TOKEN=${TOKEN}
+EOF
+sudo chmod 600 /etc/auditanchor/agent.env
+echo "[+] Agent erfolgreich enrolled. Konfiguration unter /etc/auditanchor/agent.env abgelegt."

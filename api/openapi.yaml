@@ -1,0 +1,108 @@
+openapi: 3.0.3
+info:
+  title: "AuditAnchor Evidence-Vault API"
+  version: "1.0.0"
+  description: "Fälschungssicherer Evidenz- und Audit-Vault mit GoBD/DSGVO-Support."
+servers:
+  - url: http://localhost:8080/api/v1
+security:
+  - BearerAuth: []
+paths:
+  /evidence/ingest:
+    post:
+      summary: "Evidenz-Payload einreichen (Erfordert scope: agent:ingest-only)"
+      parameters:
+        - in: header
+          name: X-Tenant-ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                payload:
+                  type: object
+      responses:
+        '201':
+          description: "Erstellt"
+  /evidence/export:
+    get:
+      summary: "Evidenz- und Audit-ZIP-Bundle exportieren"
+      parameters:
+        - in: header
+          name: X-Tenant-ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: "ZIP Bundle"
+  /audit/verify:
+    get:
+      summary: "Hash-Ketten-Integrität prüfen"
+      parameters:
+        - in: header
+          name: X-Tenant-ID
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: "Validierungsresultat"
+  /evidence/tombstone:
+    post:
+      summary: "DSGVO Cryptographic Tombstone / Löschung ausführen"
+      parameters:
+        - in: header
+          name: X-Tenant-ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                blob_id:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: "Tombstoned"
+  /agents/enroll:
+    post:
+      summary: "Agenten-Enrollment"
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tenant_id:
+                  type: string
+                enrollment_secret:
+                  type: string
+                agent_name:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '201':
+          description: "Enrolled"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
