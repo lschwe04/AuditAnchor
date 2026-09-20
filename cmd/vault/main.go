@@ -88,12 +88,18 @@ func main() {
 	ingestHandler := handlers.NewIngestHandler(dbPool, auditLogger, tsService)
 	exportHandler := handlers.NewExportHandler(exporter, auditLogger)
 
+	// RMM Webhook Handler (HMAC-authentifiziert, Tenant-isoliert)
+	rmmWebhookHandler := handlers.NewRMMWebhookHandler(dbPool)
+
 	// Differenzierte Scope-Bindung pro Endpunkt
 	mux.Handle("/api/v1/evidence/ingest", ingestChain(http.HandlerFunc(ingestHandler.Ingest)))
 	mux.Handle("/api/v1/evidence/export", exportChain(http.HandlerFunc(exportHandler.Export)))
 	mux.Handle("/api/v1/audit/verify", verifyChain(http.HandlerFunc(verifyHandler.Verify)))
 	mux.Handle("/api/v1/evidence/tombstone", tombstoneChain(http.HandlerFunc(tombstoneHandler.Tombstone)))
 	mux.Handle("/api/v1/agents/enroll", http.HandlerFunc(enrollHandler.Enroll))
+
+	// RMM Webhook Ingress (Nutzt keine JWT-Middleware, Authentifizierung erfolgt direkt im Handler)
+	mux.Handle("/api/v1/webhook/ingest", rmmWebhookHandler)
 
 	port := os.Getenv("PORT")
 	if port == "" {
