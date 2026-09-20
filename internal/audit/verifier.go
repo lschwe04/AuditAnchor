@@ -59,11 +59,12 @@ func (cv *ChainVerifier) VerifyChain(ctx context.Context, tenantID string) (Veri
 				Valid:        false,
 				TotalChecked: count,
 				BrokenAtID:   &breakID,
-				Reason:       fmt.Sprintf("prev_hash mismatch at id %d: expected %s, got %s", id, expectedPrevHash, prevHash),
+				Reason:       fmt.Sprintf("prev_hash chain discontinuity at id %d: expected %s, got %s", id, expectedPrevHash, prevHash),
 			}, nil
 		}
 
-		toHash := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s", prevHash, tID, action, actor, resID, payloadStr, createdAt.UTC().Format(time.RFC3339Nano))
+		utcTimeStr := createdAt.UTC().Format(time.RFC3339Nano)
+		toHash := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s", prevHash, tID, action, actor, resID, payloadStr, utcTimeStr)
 		h := sha256.Sum256([]byte(toHash))
 		recomputedHash := hex.EncodeToString(h[:])
 
@@ -73,7 +74,7 @@ func (cv *ChainVerifier) VerifyChain(ctx context.Context, tenantID string) (Veri
 				Valid:        false,
 				TotalChecked: count,
 				BrokenAtID:   &breakID,
-				Reason:       fmt.Sprintf("current_hash mismatch at id %d: expected %s, recomputed %s", id, currHash, recomputedHash),
+				Reason:       fmt.Sprintf("current_hash verification failure at id %d: expected %s, recomputed %s", id, currHash, recomputedHash),
 			}, nil
 		}
 
@@ -81,7 +82,7 @@ func (cv *ChainVerifier) VerifyChain(ctx context.Context, tenantID string) (Veri
 	}
 
 	if err := rows.Err(); err != nil {
-		return VerificationResult{}, fmt.Errorf("rows iteration error: %w", err)
+		return VerificationResult{}, fmt.Errorf("rows iteration error during verification: %w", err)
 	}
 
 	return VerificationResult{
