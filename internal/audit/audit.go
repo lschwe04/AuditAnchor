@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,8 +32,12 @@ func (l *Logger) LogEvent(ctx context.Context, tenantID, action, actor, resource
 	}
 	defer tx.Rollback(ctx)
 
-	// Advisory Lock gegen parallele First-Row-Inits oder Interleaving bei Tenant-Chains
-	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, tenantID)
+	// FIX F-04: Nutze 64-Bit FNV Hash anstelle von 32-Bit hashtext() zur Vermeidung von Kollisionen
+	h64 := fnv.New64a()
+	h64.Write([]byte(tenantID))
+	lockID := int64(h64.Sum64())
+
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, lockID)
 	if err != nil {
 		return fmt.Errorf("advisory lock failed: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -98,7 +99,7 @@ func (h *RMMWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Forensic Detection (Zero Outbound SSRF Fetch - string/regex matching only)
+	// 7. Forensic Detection
 	h.processForensicIOCs(ctx, tenantID, payload)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -118,7 +119,6 @@ func computeHMACSHA256(message, secret []byte) string {
 func (h *RMMWebhookHandler) processForensicIOCs(ctx context.Context, tenantID string, payload RMMWebhookPayload) {
 	if rawIOC, ok := payload.IOCs["suspicious_webhook"]; ok {
 		if hookURL, valid := rawIOC.(string); valid && isExfilDomain(hookURL) {
-			// REIN LOKALE WORM-Protokollierung ohne Outbound-Requests (SSRF-Schutz)
 			_, _ = h.pool.Exec(ctx, `
 				INSERT INTO evidence_audit_chain (tenant_id, action, actor, resource_id, payload, prev_hash, current_hash, created_at)
 				SELECT $1, 'FORENSIC_ATTACKER_HOOK_DETECTED', 'rmm-webhook-shield', $2, $3, 
@@ -129,10 +129,18 @@ func (h *RMMWebhookHandler) processForensicIOCs(ctx context.Context, tenantID st
 	}
 }
 
-func isExfilDomain(url string) bool {
-	susDomains := []string{"discord.com/api/webhooks", "webhook.office.com", "api.telegram.org"}
+// FIX F-05: Solider SSRF Domain-Check mittels echtem URL-Parsing
+func isExfilDomain(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return true // Ungültige URLs werten wir im Kontext einer Exfiltration als verdächtig
+	}
+
+	hostname := strings.ToLower(parsed.Hostname())
+	susDomains := []string{"discord.com", "office.com", "telegram.org"}
+
 	for _, d := range susDomains {
-		if strings.Contains(strings.ToLower(url), d) {
+		if hostname == d || strings.HasSuffix(hostname, "."+d) {
 			return true
 		}
 	}

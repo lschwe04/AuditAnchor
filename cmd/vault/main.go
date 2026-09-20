@@ -72,24 +72,25 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	// Least-Privilege Granular Route Guards (GoBD/Enterprise Segregation)
+	// FIX F-03: RedisRateLimitMiddleware auf failClosed=false gesetzt, um Ausfallsicherheit zu gewähren
 	ingestChain := func(next http.Handler) http.Handler {
-		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("agent:ingest-only")(next)))
+		return auth.RedisRateLimitMiddleware(rateLimiter, false, auth.TenantAuthMiddleware(auth.RequireScope("agent:ingest-only")(next)))
 	}
 	exportChain := func(next http.Handler) http.Handler {
-		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("admin:export")(next)))
+		return auth.RedisRateLimitMiddleware(rateLimiter, false, auth.TenantAuthMiddleware(auth.RequireScope("admin:export")(next)))
 	}
 	verifyChain := func(next http.Handler) http.Handler {
-		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("compliance:verify")(next)))
+		return auth.RedisRateLimitMiddleware(rateLimiter, false, auth.TenantAuthMiddleware(auth.RequireScope("compliance:verify")(next)))
 	}
 	tombstoneChain := func(next http.Handler) http.Handler {
-		return auth.RedisRateLimitMiddleware(rateLimiter, true, auth.TenantAuthMiddleware(auth.RequireScope("admin:tombstone")(next)))
+		return auth.RedisRateLimitMiddleware(rateLimiter, false, auth.TenantAuthMiddleware(auth.RequireScope("admin:tombstone")(next)))
 	}
 
 	ingestHandler := handlers.NewIngestHandler(dbPool, auditLogger, tsService)
 	exportHandler := handlers.NewExportHandler(exporter, auditLogger)
 
-	// RMM Webhook Handler (HMAC-authentifiziert, Tenant-isoliert)
-	rmmWebhookHandler := handlers.NewRMMWebhookHandler(dbPool)
+	// FIX F-02: RMM Webhook Handler instanziiert und geroutet
+	webhookHandler := handlers.NewRMMWebhookHandler(dbPool)
 
 	// Differenzierte Scope-Bindung pro Endpunkt
 	mux.Handle("/api/v1/evidence/ingest", ingestChain(http.HandlerFunc(ingestHandler.Ingest)))
@@ -98,8 +99,8 @@ func main() {
 	mux.Handle("/api/v1/evidence/tombstone", tombstoneChain(http.HandlerFunc(tombstoneHandler.Tombstone)))
 	mux.Handle("/api/v1/agents/enroll", http.HandlerFunc(enrollHandler.Enroll))
 
-	// RMM Webhook Ingress (Nutzt keine JWT-Middleware, Authentifizierung erfolgt direkt im Handler)
-	mux.Handle("/api/v1/webhook/ingest", rmmWebhookHandler)
+	// Da der Webhook eigene HMAC-Signatur-Logik nutzt, binden wir ihn direkt (bzw. mit Ratelimit)
+	mux.Handle("/api/v1/webhook/ingest", auth.RedisRateLimitMiddleware(rateLimiter, false, http.HandlerFunc(webhookHandler.ServeHTTP)))
 
 	port := os.Getenv("PORT")
 	if port == "" {

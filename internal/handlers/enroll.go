@@ -9,10 +9,10 @@ import (
 )
 
 type EnrollRequest struct {
-	TenantID         string   `json:"tenant_id"`
-	EnrollmentSecret string   `json:"enrollment_secret"`
-	AgentName        string   `json:"agent_name"`
-	Scopes           []string `json:"scopes"`
+	TenantID         string `json:"tenant_id"`
+	EnrollmentSecret string `json:"enrollment_secret"`
+	AgentName        string `json:"agent_name"`
+	// Scopes entfernt, um Manipulation durch den Client zu verhindern
 }
 
 type EnrollHandler struct {
@@ -44,10 +44,8 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scopes := req.Scopes
-	if len(scopes) == 0 {
-		scopes = []string{"agent:ingest-only"}
-	}
+	// FIX F-01: Hardcoded Scopes. Ein Agent darf aus Prinzip nur Ingest-Rechte erhalten.
+	scopes := []string{"agent:ingest-only"}
 
 	token, err := h.secManager.GenerateSignedJWT(req.TenantID, "agent-scoped", scopes, 24*time.Hour)
 	if err != nil {
